@@ -18,12 +18,15 @@ function clean_header($value)
 
 function build_captcha()
 {
-    $a = random_int(2, 9);
-    $b = random_int(2, 9);
+    $letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    $code = '';
+
+    for ($i = 0; $i < 5; $i++) {
+        $code .= $letters[random_int(0, strlen($letters) - 1)];
+    }
 
     return [
-        'question' => "What is {$a} + {$b}?",
-        'answer' => $a + $b,
+        'code' => $code,
     ];
 }
 
@@ -63,6 +66,67 @@ if (!isset($_SESSION['contact_form_started_at'])) {
     $_SESSION['contact_form_started_at'] = time();
 }
 
+if (!isset($_SESSION['contact_captcha']['code'])) {
+    $_SESSION['contact_captcha'] = build_captcha();
+}
+
+if (isset($_GET['captcha_image'])) {
+    if (!isset($_SESSION['contact_captcha']['code'])) {
+        $_SESSION['contact_captcha'] = build_captcha();
+    }
+
+    $code = $_SESSION['contact_captcha']['code'];
+    $width = 240;
+    $height = 80;
+
+    $image = imagecreatetruecolor($width, $height);
+    $background = imagecolorallocate($image, 12, 24, 48);
+    $accent = imagecolorallocate($image, 212, 150, 10);
+    $accentSoft = imagecolorallocate($image, 255, 204, 51);
+    $white = imagecolorallocate($image, 250, 250, 248);
+    $grid = imagecolorallocate($image, 34, 52, 90);
+
+    imagefilledrectangle($image, 0, 0, $width, $height, $background);
+
+    for ($i = 0; $i < 10; $i++) {
+        imageline(
+            $image,
+            random_int(0, $width),
+            random_int(0, $height),
+            random_int(0, $width),
+            random_int(0, $height),
+            $grid
+        );
+    }
+
+    for ($i = 0; $i < 120; $i++) {
+        imagesetpixel($image, random_int(0, $width - 1), random_int(0, $height - 1), $accentSoft);
+    }
+
+    $fontSize = 5;
+    $charWidth = imagefontwidth($fontSize);
+    $charHeight = imagefontheight($fontSize);
+    $startX = 28;
+    $baseY = (int) (($height - $charHeight) / 2) - 2;
+
+    for ($i = 0; $i < strlen($code); $i++) {
+        $char = $code[$i];
+        $x = $startX + ($i * 36) + random_int(-2, 3);
+        $y = $baseY + random_int(-5, 5);
+        $color = ($i % 2 === 0) ? $white : $accent;
+        imagestring($image, $fontSize, $x, $y, $char, $color);
+    }
+
+    imagestring($image, 2, 12, 8, 'Type the letters shown', $accentSoft);
+
+    header('Content-Type: image/png');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    imagepng($image);
+    imagedestroy($image);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $values['name'] = clean_input($_POST['name'] ?? '');
     $values['email'] = clean_input($_POST['email'] ?? '');
@@ -71,7 +135,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $values['message'] = clean_input($_POST['message'] ?? '');
 
     $honeypot = clean_input($_POST['website'] ?? '');
-    $captchaAnswer = clean_input($_POST['captcha_answer'] ?? '');
+    $captchaAnswer = strtoupper(clean_input($_POST['captcha-answer'] ?? ''));
     $postedToken = (string) ($_POST['form_token'] ?? '');
     $postedStartedAt = (int) ($_POST['form_started_at'] ?? 0);
 
@@ -107,9 +171,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $fieldErrors['product'] = 'Product text is too long.';
     }
 
-    if (!ctype_digit($captchaAnswer)) {
-        $fieldErrors['captcha'] = 'Captcha answer must be numeric.';
-    } elseif ((int) $captchaAnswer !== (int) $_SESSION['contact_captcha']['answer']) {
+    if (!preg_match('/^[A-Z]{5}$/', $captchaAnswer)) {
+        $fieldErrors['captcha'] = 'Please enter the 5 letters shown in the image.';
+    } elseif ($captchaAnswer !== ($_SESSION['contact_captcha']['code'] ?? '')) {
         $fieldErrors['captcha'] = 'Captcha answer is incorrect.';
     }
 
@@ -164,7 +228,7 @@ if (isset($_SESSION['contact_flash'])) {
     $feedbackType = 'is-error';
 }
 
-$captchaQuestion = $_SESSION['contact_captcha']['question'];
+$captchaCode = $_SESSION['contact_captcha']['code'] ?? build_captcha()['code'];
 $formToken = $_SESSION['contact_form_token'];
 $formStartedAt = $_SESSION['contact_form_started_at'];
 ?>
@@ -1306,6 +1370,17 @@ $formStartedAt = $_SESSION['contact_form_started_at'];
             margin-bottom: 0.75rem;
         }
 
+        .captcha-image {
+            display: block;
+            width: 100%;
+            max-width: 240px;
+            height: 80px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: #0c1830;
+            object-fit: cover;
+        }
+
         .captcha-question {
             flex: 1;
             min-width: 160px;
@@ -2345,12 +2420,16 @@ $formStartedAt = $_SESSION['contact_form_started_at'];
                     <div class="captcha-box">
                         <label class="captcha-label" for="captcha-answer">Security Check</label>
                         <div class="captcha-row">
-                            <div id="captcha-question" class="captcha-question"><?php echo esc($captchaQuestion); ?></div>
+                            <img
+                                id="captcha-image"
+                                class="captcha-image"
+                                src="?captcha_image=1&amp;v=<?php echo esc($captchaCode); ?>"
+                                alt="Captcha letters" />
                             <a href="?refresh_captcha=1#contact" id="captcha-refresh" class="captcha-refresh">Refresh</a>
                         </div>
                         <div class="form-group" style="margin-bottom: 0">
                             <input type="text" id="captcha-answer" name="captcha-answer" placeholder="Answer"
-                                inputmode="numeric" autocomplete="off" required value=""
+                                inputmode="text" autocomplete="off" maxlength="5" required value=""
                                 class="<?php echo isset($fieldErrors['captcha']) ? 'is-invalid' : ''; ?>" />
                         </div>
                     </div>
